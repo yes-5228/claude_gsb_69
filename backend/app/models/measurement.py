@@ -31,12 +31,13 @@ class Measurement(TimestampMixin, db.Model):
     remark = db.Column(db.Text)
 
     station = db.relationship("Station", back_populates="measurements")
+    # 一对一关系由 ORM 级联负责删除 (不再被动依赖数据库 ON DELETE CASCADE),
+    # 外键 ondelete="CASCADE" 仍保留, 作为数据库层面的兜底.
     exceedance = db.relationship(
         "Exceedance",
         back_populates="measurement",
         uselist=False,
         cascade="all, delete-orphan",
-        passive_deletes=True,
     )
 
     def pollutant_label(self):

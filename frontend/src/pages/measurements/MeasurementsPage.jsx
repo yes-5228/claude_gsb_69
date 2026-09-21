@@ -46,8 +46,12 @@ export default function MeasurementsPage() {
     if (!pendingDelete) return
     setDeleting(true)
     try {
-      await deleteMeasurement(pendingDelete.id)
-      toast.success('监测数据已删除')
+      const result = await deleteMeasurement(pendingDelete.id)
+      toast.success(
+        result?.exceedance_removed
+          ? '监测数据已删除, 关联的超标记录与标注信息已一并删除'
+          : '监测数据已删除'
+      )
       setPendingDelete(null)
       query.reload()
     } catch (error) {

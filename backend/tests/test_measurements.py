@@ -118,8 +118,87 @@ def test_delete_measurement_removes_exceedance(client, station, entry_payload):
     exceeded_id = created["exceedances"][0]["measurement_id"]
     response = client.delete("/api/measurements/%d" % exceeded_id)
     assert response.status_code == 200
+    body = response.get_json()
+    assert body["deleted"] is True
+    assert body["exceedance_removed"] is True
+    assert body["exceedance_status"] == "pending"
     assert Exceedance.query.count() == 0
     assert Measurement.query.count() == 2
+
+    # 工作台与看板统计同步减少
+    summary = client.get("/api/exceedances/summary").get_json()
+    assert summary["total"] == 0
+    assert summary["pending"] == 0
+
+
+def test_delete_measurement_removes_annotated_exceedance(client, station, entry_payload):
+    created = client.post("/api/measurements/entries", json=entry_payload(station.id)).get_json()
+    exceedance = created["exceedances"][0]
+    client.patch(
+        "/api/exceedances/%d" % exceedance["id"],
+        json={"status": "confirmed", "note": "复核确认超标", "annotator": "王敏"},
+    )
+
+    response = client.delete("/api/measurements/%d" % exceedance["measurement_id"])
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["exceedance_removed"] is True
+    assert body["exceedance_status"] == "confirmed"
+    assert Exceedance.query.count() == 0
+    assert Measurement.query.count() == 2
+
+
+def test_delete_measurement_without_exceedance(client, station, entry_payload):
+    created = client.post("/api/measurements/entries", json=entry_payload(station.id)).get_json()
+    pm25_id = [item for item in created["created"] if item["pollutant"] == "PM25"][0]["id"]
+    response = client.delete("/api/measurements/%d" % pm25_id)
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["exceedance_removed"] is False
+    assert body["exceedance_status"] is None
+    assert Measurement.query.count() == 2
+    assert Exceedance.query.count() == 1
+
+
+def test_delete_measurement_rolls_back_when_commit_fails(
+    client, station, entry_payload, monkeypatch
+):
+    from app.extensions import db
+
+    created = client.post("/api/measurements/entries", json=entry_payload(station.id)).get_json()
+    exceeded_id = created["exceedances"][0]["measurement_id"]
+    assert Measurement.query.count() == 3
+    assert Exceedance.query.count() == 1
+
+    def boom():
+        raise RuntimeError("simulated commit failure")
+
+    monkeypatch.setattr(db.session, "commit", boom)
+    response = client.delete("/api/measurements/%d" % exceeded_id)
+    assert response.status_code == 500
+    # 失败时数据与统计一起不动: 监测数据与超标记录都保持原样
+    assert Measurement.query.count() == 3
+    assert Exceedance.query.count() == 1
+
+
+def test_reentry_after_delete_at_same_moment(client, station, entry_payload):
+    payload = entry_payload(station.id)
+    created = client.post("/api/measurements/entries", json=payload).get_json()
+    exceeded_id = created["exceedances"][0]["measurement_id"]
+    client.delete("/api/measurements/%d" % exceeded_id)
+
+    # 删除后同一时刻重新录入同一因子: 不应再报唯一约束冲突
+    response = client.post(
+        "/api/measurements/entries",
+        json=entry_payload(station.id, entries=[{"pollutant": "SO2", "value": 950.0}]),
+    )
+    assert response.status_code == 201
+    body = response.get_json()
+    assert body["summary"]["created_count"] == 1
+    assert body["summary"]["exceeded_count"] == 1
+    assert body["summary"]["duplicate_count"] == 0
+    assert Measurement.query.count() == 3
+    assert Exceedance.query.count() == 1
 
 
 def test_entry_context_exposes_form_options(client, station):

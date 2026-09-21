@@ -183,7 +183,23 @@ def _sync_exceedance(record, meta, evaluation):
 
 
 def delete_measurement(measurement):
+    """删除监测数据, 并在同一事务中处理其关联的超标记录。
+
+    关联的超标记录无论标注状态如何(待标注/已确认/已忽略)都随监测数据
+    一并删除, 标注信息(说明、标注人、标注时间)随之销毁且不可恢复;
+    待办数量与看板统计在同一事务提交后同步减少。任何一步失败都会回滚,
+    监测数据、超标记录与统计结果保持不变。
+    """
     payload = measurement.to_dict()
+    exceedance = measurement.exceedance
+    payload["exceedance_removed"] = exceedance is not None
+    payload["exceedance_status"] = exceedance.status if exceedance else None
+    if exceedance is not None:
+        db.session.delete(exceedance)
     db.session.delete(measurement)
-    db.session.commit()
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        raise
     return payload

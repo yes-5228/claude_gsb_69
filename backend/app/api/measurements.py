@@ -97,9 +97,15 @@ def get_measurement(measurement_id):
 
 @bp.delete("/<int:measurement_id>")
 def delete_measurement(measurement_id):
+    """删除监测数据; 关联超标记录(含标注信息)在同一事务中一并删除."""
     measurement = measurement_service.get_measurement(measurement_id)
     payload = measurement_service.delete_measurement(measurement)
-    return {"id": payload["id"], "deleted": True}
+    return {
+        "id": payload["id"],
+        "deleted": True,
+        "exceedance_removed": payload["exceedance_removed"],
+        "exceedance_status": payload["exceedance_status"],
+    }
 
 
 @bp.get("/entry-context")

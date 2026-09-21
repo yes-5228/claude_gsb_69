@@ -158,7 +158,7 @@ docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d --buil
 | GET | `/api/measurements` | 监测数据分页查询(含筛选汇总) |
 | POST | `/api/measurements/entries` | **成组录入**: 一个监测点 + 一个时刻 + 多个因子 |
 | POST | `/api/measurements/preview` | 超标校验预览(不写库) |
-| DELETE | `/api/measurements/{id}` | 删除监测数据 |
+| DELETE | `/api/measurements/{id}` | 删除监测数据(同事务删除关联超标记录与标注信息, 失败整体回滚) |
 | GET | `/api/measurements/export` | 按条件导出 CSV |
 | GET | `/api/exceedances` | 超标记录查询(含筛选统计) |
 | GET | `/api/exceedances/{id}` | 超标记录详情(含关联监测数据) |
@@ -208,7 +208,7 @@ docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d --buil
 | `measurements` | `station_id` `pollutant` `period` `value` `limit_value` `exceed_ratio` `is_exceeded` `measured_at` `data_source` `recorder` | 监测数据; `(station_id, pollutant, period, measured_at)` 唯一 |
 | `exceedances` | `measurement_id`(唯一) `status` `level` `note` `annotator` `annotated_at` | 超标记录与人工标注 |
 
-删除监测点会级联清理其监测数据与超标记录; 删除监测数据会同时删除对应超标记录。
+删除监测点会级联清理其监测数据与超标记录; 删除监测数据会在**同一事务**中删除其关联的超标记录 —— 无论标注状态如何(待标注/已确认/已忽略), 标注说明、标注人、标注时间等标注信息一并销毁且不可恢复; 任一步骤失败都会整体回滚, 监测数据、超标记录与各项统计保持不变。
 
 ## 配置项
 
