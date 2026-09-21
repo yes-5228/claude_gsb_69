@@ -1,4 +1,6 @@
 """监测数据录入业务逻辑 (含超标自动判定)."""
+from sqlalchemy.exc import IntegrityError
+
 from ..domain import exceedance_rules
 from ..domain.standards import get_pollutant
 from ..errors import ConflictError, NotFoundError, ValidationError
@@ -127,7 +129,11 @@ def record_entries(station_id, measured_at, period, entries, data_source="manual
         record.remark = entry.get("remark") or remark
 
         _sync_exceedance(record, meta, evaluation)
-        db.session.flush()
+        try:
+            db.session.flush()
+        except IntegrityError:
+            db.session.rollback()
+            raise ConflictError("所选时刻已存在相同数据, 请刷新后重试或使用覆盖已有数据")
         (created if is_new else updated).append(record.to_dict(include_station=True))
         if evaluation["exceeded"]:
             exceeded.append(record.exceedance.to_dict() if record.exceedance else None)
@@ -138,7 +144,12 @@ def record_entries(station_id, measured_at, period, entries, data_source="manual
             % ", ".join(item["pollutant_label"] for item in duplicates)
         )
 
-    db.session.commit()
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        raise ConflictError("所选时刻已存在相同数据, 请刷新后重试或使用覆盖已有数据")
+
     return {
         "station": station.to_option(),
         "measured_at": measured_at.isoformat(timespec="seconds"),
@@ -183,7 +194,37 @@ def _sync_exceedance(record, meta, evaluation):
 
 
 def delete_measurement(measurement):
-    payload = measurement.to_dict()
-    db.session.delete(measurement)
-    db.session.commit()
-    return payload
+    """在同一事务中删除监测数据及其超标记录/待办。
+
+    自动生成的超标记录及人工标注随监测数据物理删除, 不保留
+    pending/confirmed/ignored 状态, 因此工作台、待办数和所有统计都会同步减少。
+    提交失败时回滚事务, 监测数据和统计均保持不变。
+    """
+    measurement_id = measurement.id
+    exceedance = (
+        db.session.query(Exceedance)
+        .filter(Exceedance.measurement_id == measurement_id)
+        .one_or_none()
+    )
+    exceedance_status_before_delete = exceedance.status if exceedance is not None else None
+    try:
+        if exceedance is not None:
+            db.session.delete(exceedance)
+            measurement.exceedance = None
+
+        db.session.delete(measurement)
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        raise ConflictError("删除失败: 数据可能已被其他操作变更, 请刷新后重试")
+    except Exception:
+        db.session.rollback()
+        raise
+
+    return {
+        "id": measurement_id,
+        "deleted": True,
+        "exceedance_removed": exceedance is not None,
+        "exceedance_status_before_delete": exceedance_status_before_delete,
+        "annotation_status_after_delete": "removed" if exceedance is not None else None,
+    }

@@ -98,8 +98,7 @@ def get_measurement(measurement_id):
 @bp.delete("/<int:measurement_id>")
 def delete_measurement(measurement_id):
     measurement = measurement_service.get_measurement(measurement_id)
-    payload = measurement_service.delete_measurement(measurement)
-    return {"id": payload["id"], "deleted": True}
+    return measurement_service.delete_measurement(measurement)
 
 
 @bp.get("/entry-context")

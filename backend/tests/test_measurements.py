@@ -1,4 +1,5 @@
 """监测数据录入接口测试."""
+from app.extensions import db
 from app.models import Exceedance, Measurement
 
 
@@ -113,13 +114,84 @@ def test_list_measurements_with_filters(client, station, entry_payload):
     assert exceeded["total"] == 1
 
 
-def test_delete_measurement_removes_exceedance(client, station, entry_payload):
+def test_delete_measurement_removes_exceedance_updates_stats_and_releases_unique_key(
+    client, station, entry_payload
+):
     created = client.post("/api/measurements/entries", json=entry_payload(station.id)).get_json()
-    exceeded_id = created["exceedances"][0]["measurement_id"]
-    response = client.delete("/api/measurements/%d" % exceeded_id)
+    exceeded_measurement_id = created["exceedances"][0]["measurement_id"]
+
+    response = client.delete("/api/measurements/%d" % exceeded_measurement_id)
     assert response.status_code == 200
+    body = response.get_json()
+    assert body["deleted"] is True
+    assert body["exceedance_removed"] is True
+    assert body["exceedance_status_before_delete"] == "pending"
+    assert body["annotation_status_after_delete"] == "removed"
     assert Exceedance.query.count() == 0
     assert Measurement.query.count() == 2
+
+    exceedance_summary = client.get("/api/exceedances/summary").get_json()
+    assert exceedance_summary["total"] == 0
+    assert exceedance_summary["pending"] == 0
+
+    overview = client.get("/api/meta/overview").get_json()
+    assert overview["exceedances"]["total"] == 0
+    assert overview["exceedances"]["pending"] == 0
+
+    measurement_summary = client.get(
+        "/api/measurements?station_id=%d" % station.id
+    ).get_json()["summary"]
+    assert measurement_summary["total"] == 2
+    assert measurement_summary["exceeded_count"] == 0
+
+    recreated = client.post(
+        "/api/measurements/entries",
+        json=entry_payload(
+            station.id,
+            entries=[{"pollutant": "SO2", "value": 900.0}],
+        ),
+    )
+    assert recreated.status_code == 201
+    assert Measurement.query.count() == 3
+    assert Exceedance.query.count() == 1
+    assert Exceedance.query.one().status == "pending"
+
+
+def test_delete_measurement_removes_annotated_exceedance_without_keeping_status(
+    client, station, entry_payload
+):
+    client.post("/api/measurements/entries", json=entry_payload(station.id))
+    exceedance = Exceedance.query.one()
+    exceedance.status = "confirmed"
+    exceedance.note = "复核确认"
+    exceedance.annotator = "测试员"
+    db.session.commit()
+
+    response = client.delete("/api/measurements/%d" % exceedance.measurement_id)
+    assert response.status_code == 200
+    assert response.get_json()["exceedance_status_before_delete"] == "confirmed"
+    assert Exceedance.query.count() == 0
+    assert client.get("/api/exceedances/summary").get_json()["total"] == 0
+
+
+def test_delete_measurement_rolls_back_when_commit_fails(
+    client, station, entry_payload, monkeypatch
+):
+    client.post("/api/measurements/entries", json=entry_payload(station.id))
+    measurement = Measurement.query.filter_by(pollutant="SO2").one()
+
+    def fail_commit():
+        raise RuntimeError("commit failed")
+
+    monkeypatch.setattr(db.session, "commit", fail_commit)
+    response = client.delete("/api/measurements/%d" % measurement.id)
+    assert response.status_code == 500
+
+    assert Measurement.query.count() == 3
+    assert Exceedance.query.count() == 1
+    summary = client.get("/api/exceedances/summary").get_json()
+    assert summary["total"] == 1
+    assert summary["pending"] == 1
 
 
 def test_entry_context_exposes_form_options(client, station):

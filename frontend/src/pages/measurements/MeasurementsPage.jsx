@@ -46,8 +46,12 @@ export default function MeasurementsPage() {
     if (!pendingDelete) return
     setDeleting(true)
     try {
-      await deleteMeasurement(pendingDelete.id)
-      toast.success('监测数据已删除')
+      const result = await deleteMeasurement(pendingDelete.id)
+      toast.success(
+        result.exceedance_removed
+          ? '监测数据及其超标记录、待办和标注已一并删除'
+          : '监测数据已删除'
+      )
       setPendingDelete(null)
       query.reload()
     } catch (error) {
@@ -124,7 +128,7 @@ export default function MeasurementsPage() {
         busy={deleting}
         title="删除监测数据"
         message={`确认删除 ${pendingDelete?.pollutant_label || ''} 的这条记录吗?`}
-        detail="若该记录已产生超标记录, 对应的标注信息也会一并删除。"
+        detail="对应超标记录会从工作台和待办统计中移除, 已有的确认/忽略标注也会随记录一并删除。"
         confirmText="确认删除"
         onConfirm={handleDelete}
         onCancel={() => setPendingDelete(null)}
